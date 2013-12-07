@@ -6,14 +6,48 @@ from django.utils.translation import ugettext_lazy as _
 from servers.models import Compute
 from storages.forms import AddStgPool, AddImage, CloneImage
 
+from vrtManager.storage import wvmStorage, wvmConnect
+
 from libvirt import libvirtError
 
 
+def storages(request, host_id):
+    """
+    Storage pool block
+    """
+    if not request.user.is_authenticated():
+        return HttpResponseRedirect('/login')
+
+    errors = []
+    compute = Compute.objects.get(id=host_id)
+
+    try:
+        conn = wvmConnect(compute.hostname,
+                          compute.login,
+                          compute.password,
+                          compute.type)
+        storages = conn.get_storages()
+
+        if request.method == 'POST':
+            if 'create' in request.POST:
+                form = AddStgPool(request.POST)
+                if form.is_valid():
+                    data = form.cleaned_data
+                    if data['name'] in storages:
+                        msg = _("Pool name already use")
+                        errors.append(msg)
+                    if not errors:
+                        conn.create_storage(data['stg_type'], data['name'], data['source'], data['target'])
+                        return HttpResponseRedirect('/storage/%s/%s/' % (host_id, data['name']))
+        conn.close()
+    except libvirtError as err:
+        errors.append(err.message)
+
+    return render_to_response('storages.html', locals(),  context_instance=RequestContext(request))
+
 def storage(request, host_id, pool):
     """
-
     Storage pool block
-
     """
     if not request.user.is_authenticated():
         return HttpResponseRedirect('/login')
@@ -26,123 +60,107 @@ def storage(request, host_id, pool):
         destination.close()
 
     errors = []
-    form = stg = size = free = usage = percent = \
-        state = s_type = path = volumes_info = None
-    host = Host.objects.get(id=host_id)
+    compute = Compute.objects.get(id=host_id)
 
     try:
-        conn = ConnServer(host)
-    except libvirtError as e:
-        conn = None
+        conn = wvmStorage(compute.hostname,
+                          compute.login,
+                          compute.password,
+                          compute.type,
+                          pool)
 
-    if not conn:
-        errors.append(e.message)
-    else:
-        storages = conn.storages_get_node()
-        if pool is None:
-            if len(storages) == 0:
-                return HttpResponseRedirect('/storage/%s/add/' % (host_id))
-            else:
-                return HttpResponseRedirect('/storage/%s/%s/' % (host_id, storages.keys()[0]))
+        storages = conn.get_storages()
+        size, free, usage = conn.get_size()
+        percent = (free * 100) / size
+        state = conn.is_active()
+        path = conn.get_target_path()
+        type = conn.get_type()
+        autostart = conn.get_autostart()
 
-        all_vm = sort_host(conn.vds_get_node())
+        if state:
+            conn.refresh()
+            volumes = conn.update_volumes()
+        else:
+            volumes = None
+    except libvirtError as err:
+        errors.append(err.message)
 
-        if not pool == 'add':
-            stg = conn.storagePool(pool)
-            size, free, usage, percent, state, s_type, path = conn.storage_get_info(pool)
-            if state:
-                stg.refresh(0)
-                volumes_info = conn.volumes_get_info(pool)
-            else:
-                volumes_info = None
-
-        if request.method == 'POST':
-            if 'pool_add' in request.POST:
-                form = AddStgPool(request.POST)
-                if form.is_valid():
-                    data = form.cleaned_data
-                    if data['name'] in storages.keys():
-                        msg = _("Pool name already use")
-                        errors.append(msg)
-                    if not errors:
-                        try:
-                            conn.new_storage_pool(data['stg_type'], data['name'], data['source'], data['target'])
-                            return HttpResponseRedirect('/storage/%s/%s/' % (host_id, data['name']))
-                        except libvirtError as error_msg:
-                            errors.append(error_msg.message)
-            if 'start' in request.POST:
-                try:
-                    stg.create(0)
-                    return HttpResponseRedirect(request.get_full_path())
-                except libvirtError as error_msg:
-                    errors.append(error_msg.message)
-            if 'stop' in request.POST:
-                try:
-                    stg.destroy()
-                    return HttpResponseRedirect(request.get_full_path())
-                except libvirtError as error_msg:
-                    errors.append(error_msg.message)
-            if 'delete' in request.POST:
-                try:
-                    stg.undefine()
-                    return HttpResponseRedirect('/storage/%s/' % host_id)
-                except libvirtError as error_msg:
-                    errors.append(error_msg.message)
-            if 'img_add' in request.POST:
-                form = AddImage(request.POST)
-                if form.is_valid():
-                    data = form.cleaned_data
-                    img_name = data['name'] + '.img'
-                    if img_name in stg.listVolumes():
-                        msg = _("Volume name already use")
-                        errors.append(msg)
-                    if not errors:
-                        conn.new_volume(pool, data['name'], data['size'], data['format'])
-                        return HttpResponseRedirect(request.get_full_path())
-            if 'img_del' in request.POST:
-                img = request.POST.get('img', '')
-                try:
-                    vol = stg.storageVolLookupByName(img)
-                    vol.delete(0)
-                    return HttpResponseRedirect(request.get_full_path())
-                except libvirtError as error_msg:
-                    errors.append(error_msg.message)
-            if 'iso_upload' in request.POST:
-                if str(request.FILES['file']) in stg.listVolumes():
-                    msg = _("ISO image already exist")
+    if request.method == 'POST':
+        if 'start' in request.POST:
+            try:
+                conn.start()
+                return HttpResponseRedirect(request.get_full_path())
+            except libvirtError as error_msg:
+                errors.append(error_msg.message)
+        if 'stop' in request.POST:
+            try:
+                conn.stop()
+                return HttpResponseRedirect(request.get_full_path())
+            except libvirtError as error_msg:
+                errors.append(error_msg.message)
+        if 'delete' in request.POST:
+            try:
+                conn.delete()
+                return HttpResponseRedirect('/storages/%s/' % host_id)
+            except libvirtError as error_msg:
+                errors.append(error_msg.message)
+        if 'set_autostart' in request.POST:
+            try:
+                conn.set_autostart(1)
+                return HttpResponseRedirect(request.get_full_path())
+            except libvirtError as error_msg:
+                errors.append(error_msg.message)
+        if 'unset_autostart' in request.POST:
+            try:
+                conn.set_autostart(0)
+                return HttpResponseRedirect(request.get_full_path())
+            except libvirtError as error_msg:
+                errors.append(error_msg.message)
+        if 'add_volume' in request.POST:
+            form = AddImage(request.POST)
+            if form.is_valid():
+                data = form.cleaned_data
+                img_name = data['name'] + '.img'
+                if img_name in conn.update_volumes():
+                    msg = _("Volume name already use")
                     errors.append(msg)
-                else:
-                    handle_uploaded_file(path, request.FILES['file'])
+                if not errors:
+                    conn.create_volume(data['name'], data['size'], data['format'])
                     return HttpResponseRedirect(request.get_full_path())
-            if 'img_clone' in request.POST:
-                form = CloneImage(request.POST)
-                if form.is_valid():
-                    data = form.cleaned_data
-                    img_name = data['name'] + '.img'
-                    if img_name in stg.listVolumes():
-                        msg = _("Name of volume name already use")
-                        errors.append(msg)
-                    if not errors:
-                        if 'convert' in data:
-                            format = data['format']
-                        else:
-                            format = None
-                        try:
-                            conn.clone_volume(pool, data['image'], data['name'], format)
-                            return HttpResponseRedirect(request.get_full_path())
-                        except libvirtError as error_msg:
-                            errors.append(error_msg.message)
-        conn.close()
+        if 'del_volume' in request.POST:
+            volname = request.POST.get('volname', '')
+            try:
+                vol = conn.get_volume(volname)
+                vol.delete(0)
+                return HttpResponseRedirect(request.get_full_path())
+            except libvirtError as error_msg:
+                errors.append(error_msg.message)
+        if 'iso_upload' in request.POST:
+            if str(request.FILES['file']) in conn.update_volumes():
+                msg = _("ISO image already exist")
+                errors.append(msg)
+            else:
+                handle_uploaded_file(path, request.FILES['file'])
+                return HttpResponseRedirect(request.get_full_path())
+        if 'cln_volume' in request.POST:
+            form = CloneImage(request.POST)
+            print form.errors
+            if form.is_valid():
+                data = form.cleaned_data
+                img_name = data['name'] + '.img'
+                if img_name in conn.update_volumes():
+                    msg = _("Name of volume name already use")
+                    errors.append(msg)
+                if not errors:
+                    if data['convert']:
+                        format = data['format']
+                    else:
+                        format = None
+                    try:
+                        conn.clone_volume(data['image'], data['name'], format)
+                        return HttpResponseRedirect(request.get_full_path())
+                    except libvirtError as error_msg:
+                        errors.append(error_msg.message)
+    conn.close()
 
-    return render_to_response('storage.html', {'host_id': host_id,
-                                               'errors': errors,
-                                               'form': form,
-                                               'storages': storages,
-                                               'pool': pool,
-                                               'all_vm': all_vm,
-                                               'stg': stg,
-                                               'size': size, 'free': free, 'usage': usage, 'percent': percent,
-                                               'state': state, 's_type': s_type, 'path': path,
-                                               'volumes_info': volumes_info
-                                               },
-                              context_instance=RequestContext(request))
+    return render_to_response('storage.html', locals(),  context_instance=RequestContext(request))

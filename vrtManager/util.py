@@ -33,12 +33,6 @@ def get_max_vcpus(conn, type=None):
         m = 32
     return m
 
-def get_phy_cpus(conn):
-    """Get number of physical CPUs."""
-    hostinfo = conn.getInfo()
-    pcpus = hostinfo[4] * hostinfo[5] * hostinfo[6] * hostinfo[7]
-    return pcpus
-
 def xml_escape(str):
     """Replaces chars ' " < > & with xml safe counterparts"""
     if str is None:
@@ -96,7 +90,7 @@ def get_xml_path(xml, path=None, func=None):
             result = func(ctx)
 
         else:
-            raise ValueError(_("'path' or 'func' is required."))
+            raise ValueError("'path' or 'func' is required.")
     finally:
         if doc:
             doc.freeDoc()
@@ -104,3 +98,16 @@ def get_xml_path(xml, path=None, func=None):
             ctx.xpathFreeContext()
     return result
 
+def pretty_mem(val):
+    val = int(val)
+    if val > (10 * 1024 * 1024):
+        return "%2.2f GB" % (val / (1024.0 * 1024.0))
+    else:
+        return "%2.0f MB" % (val / 1024.0)
+
+def pretty_bytes(val):
+    val = int(val)
+    if val > (1024 * 1024 * 1024):
+        return "%2.2f GB" % (val / (1024.0 * 1024.0 * 1024.0))
+    else:
+        return "%2.2f MB" % (val / (1024.0 * 1024.0))

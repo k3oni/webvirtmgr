@@ -119,8 +119,8 @@ INSTALLED_APPS = (
     'django.contrib.staticfiles',
     # 'django.contrib.admin',
     'servers',
-    #'instances',
-    #'create',
+    'instance',
+    'create',
 )
 
 INSTALLED_APPS += ('django_jenkins',)

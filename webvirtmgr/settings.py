@@ -118,8 +118,8 @@ INSTALLED_APPS = (
     'django.contrib.staticfiles',
     # 'django.contrib.admin',
     'servers',
-    #'instances',
-    #'create',
+    'instance',
+    'create',
 )
 
 # A sample logging configuration. The only tangible logging
